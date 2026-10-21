@@ -1,0 +1,222 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>LifeLink | Hospital Finder</title>
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"
+    integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY=" crossorigin="">
+  <style>
+    :root { color: #172438; font: 16px system-ui, sans-serif; background: #f4f7fb; }
+    body { margin: 0; }
+    main { max-width: 1050px; margin: 28px auto; padding: 0 18px 36px; }
+    h1 { margin: 0 0 6px; }
+    p { color: #536174; }
+    .card { background: white; border: 1px solid #d5dce6; border-radius: 12px; padding: 20px; margin: 18px 0; }
+    .fields { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px; }
+    .field { display: flex; flex-direction: column; gap: 6px; }
+    .field label, legend { font-weight: 650; }
+    input, select, textarea, button { box-sizing: border-box; width: 100%; padding: 10px 11px; border: 1px solid #cbd5e1; border-radius: 7px; font: inherit; background: white; }
+    textarea { min-height: 76px; resize: vertical; }
+    button { width: auto; cursor: pointer; background: #174ea6; color: white; border-color: #174ea6; font-weight: 650; }
+    button:hover { background: #123e85; }
+    .zip-row { display: flex; gap: 8px; }
+    .zip-row input { flex: 1; min-width: 0; }
+    .zip-row button { flex: 0 0 auto; }
+    .suggestions { border: 1px solid #d5dce6; border-radius: 8px; padding: 12px; margin: 16px 0; }
+    .option { display: flex; align-items: flex-start; gap: 10px; padding: 12px 4px; cursor: pointer; }
+    .option + .option { border-top: 1px solid #edf0f4; }
+    .option input { width: auto; margin-top: 4px; }
+    .hospital-option-text { line-height: 1.55; }
+    .donor-choice { margin: 12px 0; }
+    .donor-choice label { display: inline-flex; align-items: flex-start; gap: 8px; cursor: pointer; }
+    .donor-choice input { width: auto; margin-top: 4px; }
+    .muted { color: #65758b; font-size: 14px; }
+    .error { color: #a32121; }
+    .success { padding: 12px; border-radius: 8px; background: #e8f6ec; color: #18572b; }
+    #map { height: 440px; border: 1px solid #d5dce6; border-radius: 10px; }
+    @media (max-width: 650px) { .fields { grid-template-columns: 1fr; } .zip-row { flex-direction: column; } .zip-row button { width: 100%; } #map { height: 350px; } }
+  </style>
+</head>
+<body>
+  <main>
+    <h1>LifeLink hospital finder</h1>
+    <p>Enter the patient's ZIP code to identify the area, then select the hospital where they are being treated. Donors are matched around that hospital.</p>
+    <p class="muted">Demo lookup: Quezon City ZIP codes 1109, 1121, and 1126. Hospital coordinates and distances are approximate. Requests are not saved yet.</p>
+
+    <section class="card">
+      <h2>Blood request</h2>
+      <form method="post">
+        {% csrf_token %}
+        <div class="fields">
+          <div class="field">
+            <label for="requester-role">I am</label>
+            <select id="requester-role" name="requester_role" required>
+              {% for value, label in requester_roles.items %}
+                <option value="{{ value }}" {% if value == selected_requester_role %}selected{% endif %}>{{ label }}</option>
+              {% endfor %}
+            </select>
+          </div>
+          <div class="field">
+            <label for="blood-type">Required blood type</label>
+            <select id="blood-type" name="blood_type" required>
+              {% for blood_type in blood_types %}
+                <option value="{{ blood_type }}" {% if blood_type == selected_blood_type %}selected{% endif %}>{{ blood_type }}</option>
+              {% endfor %}
+            </select>
+          </div>
+          <div class="field">
+            <label for="urgency">Urgency</label>
+            <select id="urgency" name="urgency" required>
+              {% for value, label in urgency_levels.items %}
+                <option value="{{ value }}" {% if value == selected_urgency %}selected{% endif %}>{{ label }}</option>
+              {% endfor %}
+            </select>
+          </div>
+          <div class="field">
+            <label for="zip-code">Patient ZIP code / location</label>
+            <div class="zip-row">
+              <input id="zip-code" name="zip_code" inputmode="numeric" pattern="[0-9]{4}" maxlength="4" value="{{ zip_code }}" placeholder="e.g. 1109" required>
+              <button type="submit" name="action" value="find_hospitals">Show hospital list</button>
+            </div>
+          </div>
+          <div class="field">
+            <label for="area">Area identified</label>
+            <input id="area" value="{% if lookup_area %}{{ lookup_area }}{% else %}Enter ZIP code and show hospital list{% endif %}" readonly>
+          </div>
+          <div class="field" style="grid-column: 1 / -1">
+            <label for="details">Patient / request details</label>
+            <textarea id="details" name="details" maxlength="300" placeholder="Optional details that help the hospital review the request. Do not enter patient name or contact details.">{{ request_details }}</textarea>
+          </div>
+        </div>
+
+        {% if zip_error %}<p class="error">{{ zip_error }}</p>{% endif %}
+        {% if request_error %}<p class="error">{{ request_error }}</p>{% endif %}
+
+        {% if hospital_suggestions %}
+          <fieldset class="suggestions">
+            <legend>Select the hospital where the patient is being treated</legend>
+              {% for hospital in hospital_suggestions %}
+                <label class="option">
+                  <input type="radio" name="hospital" value="{{ hospital.id }}" {% if hospital.id == selected_hospital_id %}checked{% endif %} required>
+                  <span class="hospital-option-text">
+                    <strong>Hospital:</strong> {{ hospital.name }}<br>
+                    <strong>Address:</strong> {{ hospital.address }}<br>
+                  </span>
+                </label>
+            {% endfor %}
+          </fieldset>
+          <button type="submit" name="action" value="submit_request">Select hospital and submit request</button>
+        {% endif %}
+
+        {% if request_submitted %}
+          <p class="success">Demo request prepared for {{ selected_hospital.name }}. It is not saved to a database yet.</p>
+          <h3>Eligible donors nearest this hospital</h3>
+          <p class="muted">Choose one or more. Results are ranked by straight-line distance from {{ selected_hospital.name }}, within 25 km. These are fictional sample profiles; the hospital must verify donor eligibility.</p>
+          {% if donor_selection_error %}<p class="error">Select at least one donor to continue.</p>{% endif %}
+          {% if donor_matches %}
+            <ol>
+              {% for donor in donor_matches %}
+                <li class="donor-choice">
+                  <label><input class="donor-checkbox" type="checkbox" name="selected_donors" value="{{ donor.id }}" {% if donor.id in selected_donor_ids %}checked{% endif %}>
+                    <strong>{{ donor.name }}</strong> · {{ donor.blood_type }} · {{ donor.barangay }} · about {{ donor.distance_km }} km away
+                  </label><br><span class="muted">Last donation: {{ donor.last_donation }}</span>
+                </li>
+              {% endfor %}
+            </ol>
+            {% if not donors_confirmed %}<button type="submit" name="action" value="confirm_donors">Confirm selected donors</button>{% endif %}
+          {% else %}
+            <p>No eligible sample donors found for {{ selected_blood_type }}. This can happen when there are not enough registered donors.</p>
+          {% endif %}
+          {% if donors_confirmed %}<p class="success">You selected {{ selected_donor_ids|length }} donor(s). No SMS was sent and no contact information was shared.</p>{% endif %}
+        {% elif lookup_done %}
+          <p class="muted">Choose the correct hospital above. Its pin is shown on the map below.</p>
+        {% endif %}
+      </form>
+    </section>
+
+    <section class="card">
+      <h2>Selected hospital on the map</h2>
+      <div id="map" aria-label="Map with the selected hospital pinned"></div>
+      <p class="muted" id="map-note">Map tiles use CARTO and OpenStreetMap and need an internet connection. The hospital pin and eligible donor pins are shown when a request is submitted.</p>
+    </section>
+  </main>
+
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"
+    integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo=" crossorigin=""></script>
+  {{ selected_hospital_json|json_script:"hospital-data" }}
+  {{ donor_matches_json|json_script:"donor-data" }}
+  <script>
+    const hospital = JSON.parse(document.getElementById('hospital-data').textContent);
+    const donors = JSON.parse(document.getElementById('donor-data').textContent);
+    const initialCenter = hospital ? hospital.coords : [14.6760, 121.0437];
+    const map = L.map('map').setView(initialCenter, hospital ? 14 : 12);
+    const cartoKey = '{{ carto_api_key|escapejs }}';
+    const tileUrl = `https://basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}.png?key=${encodeURIComponent(cartoKey)}`;
+    if (!cartoKey) {
+      document.getElementById('map-note').textContent = 'Set CARTO_API_KEY in .env and restart Django to load map tiles.';
+    }
+    L.tileLayer(tileUrl, {
+      maxZoom: 19,
+      attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors &copy; <a href="https://carto.com/attributions">CARTO</a>'
+    }).addTo(map);
+
+    const bounds = [];
+    if (hospital) {
+      const popup = document.createElement('div');
+      const name = document.createElement('strong');
+      name.textContent = hospital.name;
+      const address = document.createElement('div');
+      address.textContent = hospital.address;
+      popup.append(name, address);
+      L.marker(hospital.coords).addTo(map).bindPopup(popup).openPopup();
+      bounds.push(hospital.coords);
+    }
+
+    const donorMarkers = new Map();
+    donors.forEach((donor, index) => {
+      const popup = document.createElement('div');
+      const name = document.createElement('strong');
+      name.textContent = `${index + 1}. ${donor.name}`;
+      const details = document.createElement('div');
+      details.textContent = `${donor.blood_type} · ${donor.barangay} · about ${donor.distance_km} km away`;
+      const lastDonation = document.createElement('div');
+      lastDonation.textContent = `Last donation: ${donor.last_donation}`;
+      const availability = document.createElement('div');
+      availability.textContent = donor.available ? 'Availability: Available' : 'Availability: Unavailable';
+      const eligibility = document.createElement('div');
+      eligibility.textContent = 'Demo eligibility: meets the three-month donation gap and blood-type filter';
+      popup.append(name, details, availability, lastDonation, eligibility);
+
+      const marker = L.circleMarker(donor.coords, {
+        radius: 9, color: '#174ea6', fillColor: '#4f8df7', fillOpacity: 1, weight: 3
+      }).addTo(map).bindPopup(popup);
+      donorMarkers.set(donor.id, marker);
+      bounds.push(donor.coords);
+
+      marker.on('click', () => {
+        const checkbox = document.querySelector(`.donor-checkbox[value="${donor.id}"]`);
+        if (checkbox) {
+          checkbox.checked = !checkbox.checked;
+          checkbox.dispatchEvent(new Event('change', { bubbles: true }));
+        }
+      });
+    });
+
+    document.querySelectorAll('.donor-checkbox').forEach(checkbox => {
+      const updateMarker = () => {
+        const marker = donorMarkers.get(checkbox.value);
+        if (marker) marker.setStyle(checkbox.checked
+          ? { color: '#a51d2d', fillColor: '#e5484d', radius: 11 }
+          : { color: '#174ea6', fillColor: '#4f8df7', radius: 9 });
+      };
+      checkbox.addEventListener('change', updateMarker);
+      updateMarker();
+    });
+
+    if (bounds.length > 1) {
+      map.fitBounds(bounds, { padding: [42, 42], maxZoom: 14 });
+    }
+  </script>
+</body>
+</html>
